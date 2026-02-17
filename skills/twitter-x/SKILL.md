@@ -67,6 +67,13 @@ uv run {baseDir}/scripts/twitter_read.py user --username username --count 10
 uv run {baseDir}/scripts/twitter_read.py tweet --id 1234567890
 ```
 
+## Verify permissions
+
+```bash
+# Diagnose credentials and app permissions (use when you get 403 errors)
+uv run {baseDir}/scripts/twitter_post.py --verify
+```
+
 ## Post tweets
 
 ```bash

@@ -27,14 +27,8 @@ import argparse
 import os
 import sys
 
-def get_client():
-    """Create an authenticated Tweepy client."""
-    try:
-        import tweepy
-    except ImportError:
-        print("Error: tweepy not installed. Run: uv run this_script.py", file=sys.stderr)
-        sys.exit(1)
-
+def get_credentials():
+    """Read and validate Twitter API credentials from environment."""
     api_key = os.environ.get("TWITTER_API_KEY")
     api_secret = os.environ.get("TWITTER_API_SECRET")
     access_token = os.environ.get("TWITTER_ACCESS_TOKEN")
@@ -54,6 +48,19 @@ def get_client():
         print(f"Error: Missing environment variables: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
 
+    return api_key, api_secret, access_token, access_token_secret
+
+
+def get_client():
+    """Create an authenticated Tweepy client."""
+    try:
+        import tweepy
+    except ImportError:
+        print("Error: tweepy not installed. Run: uv run this_script.py", file=sys.stderr)
+        sys.exit(1)
+
+    api_key, api_secret, access_token, access_token_secret = get_credentials()
+
     # v1.1 API for media uploads
     auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
     api_v1 = tweepy.API(auth)
@@ -69,6 +76,94 @@ def get_client():
     return client, api_v1
 
 
+def verify_permissions():
+    """Verify Twitter API credentials and app permissions for posting."""
+    try:
+        import tweepy
+    except ImportError:
+        print("Error: tweepy not installed. Run: uv run this_script.py", file=sys.stderr)
+        sys.exit(1)
+
+    api_key, api_secret, access_token, access_token_secret = get_credentials()
+
+    print("=== Twitter API Permission Diagnostic ===\n")
+
+    # Check credentials format
+    print(f"API Key:            {api_key[:6]}...{api_key[-4:]}")
+    print(f"API Secret:         {api_secret[:4]}...{api_secret[-4:]}")
+    print(f"Access Token:       {access_token[:6]}...{access_token[-4:]}")
+    print(f"Access Token Secret: {access_token_secret[:4]}...{access_token_secret[-4:]}")
+    print()
+
+    # Test 1: Verify credentials with v1.1 API (returns permission level)
+    print("[1/3] Checking OAuth1 credentials via v1.1 API...")
+    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+    api_v1 = tweepy.API(auth)
+    try:
+        resp = api_v1.verify_credentials()
+        print(f"  OK — Authenticated as: @{resp.screen_name} (id={resp.id})")
+    except tweepy.Unauthorized as e:
+        print(f"  FAIL — 401 Unauthorized: credentials are invalid.")
+        print(f"  Detail: {e}")
+        print(f"\n  Fix: Regenerate all 4 credentials in Developer Portal > Keys and Tokens.")
+        sys.exit(1)
+    except tweepy.Forbidden as e:
+        print(f"  FAIL — 403 Forbidden: {e}")
+        print(f"\n  This usually means your App lacks 'User authentication' settings.")
+        print(f"  Fix: Developer Portal > App > Settings > User authentication settings > Set up")
+        sys.exit(1)
+    except Exception as e:
+        print(f"  FAIL — {type(e).__name__}: {e}")
+        sys.exit(1)
+
+    # Test 2: Check the access level header from the last response
+    print("\n[2/3] Checking app permission level...")
+    try:
+        last_resp = api_v1.last_response
+        access_level = last_resp.headers.get("x-access-level", "unknown")
+        print(f"  x-access-level: {access_level}")
+        if "write" in access_level.lower():
+            print(f"  OK — App has write permission.")
+        elif access_level == "unknown":
+            print(f"  WARN — Could not determine access level from headers.")
+            print(f"  The x-access-level header may not be present on all endpoints.")
+        else:
+            print(f"  FAIL — App only has '{access_level}' permission. 'Read and write' is required.")
+            print(f"\n  Fix:")
+            print(f"    1. Developer Portal > App > Settings > User authentication settings")
+            print(f"    2. Set 'App permissions' to 'Read and Write'")
+            print(f"    3. Save, then go to 'Keys and Tokens'")
+            print(f"    4. Regenerate Access Token and Secret")
+            print(f"    5. Update your config with the NEW tokens")
+            sys.exit(1)
+    except Exception:
+        print(f"  WARN — Could not read access level header.")
+
+    # Test 3: Try the v2 /2/users/me endpoint
+    print("\n[3/3] Checking v2 API access...")
+    client = tweepy.Client(
+        consumer_key=api_key,
+        consumer_secret=api_secret,
+        access_token=access_token,
+        access_token_secret=access_token_secret,
+    )
+    try:
+        me = client.get_me()
+        print(f"  OK — v2 API authenticated as: @{me.data.username} (id={me.data.id})")
+    except tweepy.Forbidden as e:
+        print(f"  FAIL — 403 Forbidden on v2 API: {e}")
+        print(f"\n  Your app may not have the v2 tweet.read or tweet.write scope.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"  FAIL — {type(e).__name__}: {e}")
+        sys.exit(1)
+
+    print("\n=== All checks passed. Your app should be able to post tweets. ===")
+    print("If posting still fails with 403, the most likely cause is:")
+    print("  - Access Token was generated BEFORE you set 'Read and Write' permission")
+    print("  - Fix: Regenerate Access Token & Secret AFTER setting permissions, then update config")
+
+
 def upload_media(api_v1, media_path: str) -> str:
     """Upload media file and return media_id."""
     if not os.path.isfile(media_path):
@@ -82,13 +177,28 @@ def upload_media(api_v1, media_path: str) -> str:
 
 def post_tweet(client, text: str, media_ids: list | None = None, reply_to: str | None = None):
     """Post a single tweet, optionally with media or as a reply."""
+    import tweepy
+
     kwargs = {"text": text}
     if media_ids:
         kwargs["media_ids"] = media_ids
     if reply_to:
         kwargs["in_reply_to_tweet_id"] = reply_to
 
-    response = client.create_tweet(**kwargs)
+    try:
+        response = client.create_tweet(**kwargs)
+    except tweepy.Forbidden as e:
+        print(f"\nError: 403 Forbidden — cannot post tweet.", file=sys.stderr)
+        print(f"Detail: {e}", file=sys.stderr)
+        print(f"\nThis means your app's Access Token does not have write permission.", file=sys.stderr)
+        print(f"To fix this:", file=sys.stderr)
+        print(f"  1. Go to https://developer.x.com/ > your App > Settings", file=sys.stderr)
+        print(f"  2. Under 'User authentication settings', set App permissions to 'Read and Write'", file=sys.stderr)
+        print(f"  3. Go to 'Keys and Tokens' and REGENERATE Access Token & Secret", file=sys.stderr)
+        print(f"  4. Update your config with the NEW Access Token and Secret", file=sys.stderr)
+        print(f"\nRun with --verify to diagnose your permissions in detail.", file=sys.stderr)
+        sys.exit(1)
+
     tweet_id = response.data["id"]
     print(f"Posted tweet: https://x.com/i/status/{tweet_id}")
     return tweet_id
@@ -114,6 +224,8 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--text", "-t", help="Tweet text (max 280 chars)")
     group.add_argument("--thread", nargs="+", metavar="TEXT", help="Post a thread of tweets")
+    group.add_argument("--verify", action="store_true",
+                       help="Verify API credentials and app permissions (diagnose 403 errors)")
 
     parser.add_argument("--media", "-m", action="append", dest="media_files", metavar="FILE",
                         help="Attach media file(s) (images/videos, max 4)")
@@ -123,6 +235,10 @@ def main():
                         help="Print what would be posted without actually posting")
 
     args = parser.parse_args()
+
+    if args.verify:
+        verify_permissions()
+        return
 
     if args.dry_run:
         if args.text:
