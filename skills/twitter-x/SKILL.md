@@ -106,6 +106,20 @@ uv run {baseDir}/scripts/twitter_digest.py --sources timeline --search "AI" --fo
 
 For scheduled automation, see `references/daily-digest-cron.md`.
 
+## Telegram notification
+
+Send digest results or any message to Telegram:
+
+```bash
+# Send a text message
+uv run {baseDir}/scripts/telegram_notify.py --text "Your digest summary here"
+
+# Pipe content from another command
+uv run {baseDir}/scripts/twitter_digest.py --sources timeline --search "AI" | uv run {baseDir}/scripts/telegram_notify.py --stdin
+```
+
+Requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in env config.
+
 ## Important notes
 
 - Twitter Free tier: 17 tweets/24h per user. Do not exceed this.
