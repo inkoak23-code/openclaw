@@ -28,7 +28,8 @@ if [ -z "$DIGEST" ]; then
     DIGEST="[Twitter Digest] No tweets found for today's topics."
 fi
 
-# Send to Telegram
+# Send to Telegram group (DClaw group, both accounts receive)
+# Use TELEGRAM_CHAT_ID=-5260745220 for group, or 6936746569 for private
 echo "$DIGEST" | uv run "$SCRIPT_DIR/telegram_notify.py" --stdin
 
 echo "Daily digest sent to Telegram at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
