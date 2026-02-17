@@ -165,9 +165,12 @@ def main():
         tweets = fetch_mentions(client, args.count)
         digest["sections"].append({"source": "mentions", "count": len(tweets), "tweets": tweets})
 
-    for term in search_terms:
-        tweets = fetch_search(client, term, args.count)
-        digest["sections"].append({"source": f"search:{term}", "count": len(tweets), "tweets": tweets})
+    if search_terms:
+        # Combine terms into one OR query to save API rate limits
+        combined_query = " OR ".join(search_terms) + " -is:retweet"
+        tweets = fetch_search(client, combined_query, args.count)
+        label = ",".join(search_terms)
+        digest["sections"].append({"source": f"search:{label}", "count": len(tweets), "tweets": tweets})
 
     if args.format == "json":
         print(json.dumps(digest, indent=2, ensure_ascii=False))
