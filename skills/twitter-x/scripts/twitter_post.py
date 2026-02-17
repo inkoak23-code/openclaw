@@ -3,6 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "tweepy>=4.14.0",
+#     "httpx>=0.27.0",
 # ]
 # ///
 """
@@ -26,6 +27,7 @@ Optional:
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 
 def get_credentials():
     """Read and validate Twitter API credentials from environment."""
@@ -164,6 +166,43 @@ def verify_permissions():
     print("  - Fix: Regenerate Access Token & Secret AFTER setting permissions, then update config")
 
 
+def send_telegram_notification(tweet_text: str, tweet_url: str, tweet_type: str = "post"):
+    """Send a Telegram notification after posting a tweet."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print("Warning: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set, skipping notification.", file=sys.stderr)
+        return
+
+    try:
+        import httpx
+    except ImportError:
+        print("Warning: httpx not installed, skipping Telegram notification.", file=sys.stderr)
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    message = (
+        f"📢 New Tweet Posted\n"
+        f"🕐 Time: {timestamp}\n"
+        f"📝 Content: {tweet_text}\n"
+        f"🔗 Link: {tweet_url}\n"
+        f"📊 Type: {tweet_type}"
+    )
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message}
+
+    try:
+        resp = httpx.post(url, json=payload, timeout=30)
+        if resp.status_code == 200:
+            print(f"Telegram notification sent.")
+        else:
+            print(f"Warning: Telegram API returned {resp.status_code}: {resp.text}", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Failed to send Telegram notification: {e}", file=sys.stderr)
+
+
 def upload_media(api_v1, media_path: str) -> str:
     """Upload media file and return media_id."""
     if not os.path.isfile(media_path):
@@ -175,7 +214,8 @@ def upload_media(api_v1, media_path: str) -> str:
     return media.media_id
 
 
-def post_tweet(client, text: str, media_ids: list | None = None, reply_to: str | None = None):
+def post_tweet(client, text: str, media_ids: list | None = None, reply_to: str | None = None,
+               notify: bool = False, tweet_type: str = "post"):
     """Post a single tweet, optionally with media or as a reply."""
     import tweepy
 
@@ -200,11 +240,17 @@ def post_tweet(client, text: str, media_ids: list | None = None, reply_to: str |
         sys.exit(1)
 
     tweet_id = response.data["id"]
-    print(f"Posted tweet: https://x.com/i/status/{tweet_id}")
+    tweet_url = f"https://x.com/i/status/{tweet_id}"
+    print(f"Posted tweet: {tweet_url}")
+
+    if notify:
+        send_telegram_notification(text, tweet_url, tweet_type)
+
     return tweet_id
 
 
-def post_thread(client, texts: list[str], media_ids: list | None = None):
+def post_thread(client, texts: list[str], media_ids: list | None = None,
+                notify: bool = False, tweet_type: str = "thread"):
     """Post a thread of tweets. First tweet optionally includes media."""
     if not texts:
         print("Error: No texts provided for thread.", file=sys.stderr)
@@ -212,11 +258,16 @@ def post_thread(client, texts: list[str], media_ids: list | None = None):
 
     first_media = media_ids if media_ids else None
     prev_id = post_tweet(client, texts[0], media_ids=first_media)
+    thread_url = f"https://x.com/i/status/{prev_id}"
 
     for text in texts[1:]:
         prev_id = post_tweet(client, text, reply_to=prev_id)
 
     print(f"Thread posted: {len(texts)} tweets")
+
+    if notify:
+        full_content = "\n---\n".join(f"[{i+1}/{len(texts)}] {t}" for i, t in enumerate(texts))
+        send_telegram_notification(full_content, thread_url, tweet_type)
 
 
 def main():
@@ -233,6 +284,11 @@ def main():
                         help="Reply to an existing tweet ID")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would be posted without actually posting")
+    parser.add_argument("--notify", action="store_true",
+                        help="Send Telegram notification after posting (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
+    parser.add_argument("--type", dest="tweet_type", default="post",
+                        choices=["hot take", "builder insight", "alpha thread", "engagement", "reply", "QT", "post"],
+                        help="Tweet type label for Telegram notification (default: post)")
 
     args = parser.parse_args()
 
@@ -257,9 +313,11 @@ def main():
         media_ids = [upload_media(api_v1, f) for f in args.media_files]
 
     if args.text:
-        post_tweet(client, args.text, media_ids=media_ids, reply_to=args.reply_to)
+        post_tweet(client, args.text, media_ids=media_ids, reply_to=args.reply_to,
+                   notify=args.notify, tweet_type=args.tweet_type)
     elif args.thread:
-        post_thread(client, args.thread, media_ids=media_ids)
+        post_thread(client, args.thread, media_ids=media_ids,
+                    notify=args.notify, tweet_type=args.tweet_type)
 
 
 if __name__ == "__main__":
